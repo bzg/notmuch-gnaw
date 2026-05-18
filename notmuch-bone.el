@@ -60,7 +60,7 @@ The file is a Clojure/EDN map that may contain:
   "Face for right-margin annotations (type, flags, priority, votes)."
   :group 'notmuch-bone)
 
-(defconst notmuch-bone-minimum-bark-format "0.9.0"
+(defconst notmuch-bone-minimum-bark-format "0.9.1"
   "Minimum supported BONE reports.json bark-format.")
 
 (defvar notmuch-bone-votes-width 7

@@ -10,7 +10,7 @@ open [[https://codeberg.org/bzg/bark][BARK]] report. It reads the same =reports.
 - =~/.config/bone/config.edn= (shared with bone), containing at least
   a =:sources= vector with =:url= entries pointing to =reports.json=
   files (local paths or URLs).
-- =notmuch-bone= supports =reports.json= bark-format =0.9.0=.
+- =notmuch-bone= supports =reports.json= bark-format =0.9.1=.
 - =notmuch-bone= does not call the =bone= binary, it only reads the
   files that =bone= produces.  You need to have run =bone= at least
   once to generate =config.edn= and the =reports.json= files.
