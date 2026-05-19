@@ -17,9 +17,30 @@ open [[https://codeberg.org/bzg/bark][BARK]] report. It reads the same =reports.
 
 * Commands
 
-- =M-x notmuch-bone= — Apply overlays to the current summary buffer.
-- =M-x notmuch-bone-clear= — Remove all =notmuch-bone= overlays.
+- =M-x notmuch-bone= — Search for open BARK reports and highlight them.
+- =M-x notmuch-bone-tree= — Show open BARK reports in =notmuch-tree=.
+- =M-x notmuch-bone-highlight= — Highlight matches in current
+  =notmuch-search= buffer.
 - =M-x notmuch-bone-topic= — Filter reports by selected topic.
+- =M-x notmuch-bone-clear= — Remove all =notmuch-bone= overlays.
+
+** Local marks
+
+The following commands toggle bone's local marks. They edit
+=~/.config/bone/state.edn=, which is shared with the =bone= CLI and
+=gnus-bone=, so marks are visible across all three.
+
+- =M-x notmuch-bone-mark-read= — Toggle the =:read-at= timestamp.
+- =M-x notmuch-bone-mark-todo= — Toggle the =:todo= flag.
+- =M-x notmuch-bone-mark-sticky= — Toggle the =:sticky= flag.
+
+The annotation gains a leading column showing the current mark:
+=!= for =:todo=, =*= for =:sticky=, =r= for =:read-at= (without flag).
+
+In =notmuch-search-mode= a line is a thread; the *first* message-id in
+that thread that is also a BARK report is the one toggled.  Use
+=M-x notmuch-bone-tree= to mark a specific report when a thread contains
+several.
 
 * Contributing
 

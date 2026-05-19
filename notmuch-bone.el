@@ -32,11 +32,22 @@
 ;; M-x notmuch-bone-highlight RET — highlight matches in current search buffer
 ;; M-x notmuch-bone-clear RET   — remove highlights
 ;;
+;; The following commands toggle bone's local marks (kept in
+;; ~/.config/bone/state.edn so they are shared with the bone CLI):
+;;
+;; M-x notmuch-bone-mark-read   RET — toggle :read-at on current report
+;; M-x notmuch-bone-mark-todo   RET — toggle :todo flag on current report
+;; M-x notmuch-bone-mark-sticky RET — toggle :sticky flag on current report
+;;
+;; The annotation gains a leading mark column: '!' = :todo, '*' = :sticky,
+;; 'r' = :read-at (without flag).
+;;
 ;;; Code:
 
 (require 'json)
 (require 'cl-lib)
 (require 'notmuch)
+(require 'notmuch-tree)
 
 (defvar notmuch-bone-config-file "~/.config/bone/config.edn"
   "Path to bone config.edn.
@@ -45,6 +56,13 @@ The file is a Clojure/EDN map that may contain:
   :skip-columns vector of column names to skip (strings)
   :sources      vector of maps, each with a :url key pointing to a
                 reports.json URI (local path or http(s) URL).")
+
+(defvar notmuch-bone-state-file "~/.config/bone/state.edn"
+  "Path to bone's local state file.
+An EDN map keyed by RFC-2822 message-id (with angle brackets).
+Each value is a map with keys :subject :type :author :created and
+optionally :flag (:todo or :sticky) and :read-at (ISO-8601 string).
+The file is shared with the bone CLI; both read and write atomically.")
 
 (defvar notmuch-bone-addresses nil
   "List of user email addresses, populated from `notmuch-bone-config-file'.")
@@ -183,7 +201,11 @@ A report is open when its status is >= 4."
             (deadline       (alist-get 'deadline r))
             (expiry         (alist-get 'expiry r))
             (last-activity  (alist-get 'last-activity r))
-            (topic          (alist-get 'topic r)))
+            (topic          (alist-get 'topic r))
+            (subject        (alist-get 'subject r))
+            (from           (alist-get 'from r))
+            (from-name      (alist-get 'from-name r))
+            (date           (alist-get 'date r)))
         (when (and mid (numberp status) (>= status 4))
           (let ((flags (concat (if acked "A" "-")
                                (if owned "O" "-")
@@ -200,13 +222,271 @@ A report is open when its status is >= 4."
                                   :deadline deadline
                                   :expiry expiry
                                   :last-activity last-activity
-                                  :topic topic))
+                                  :topic topic
+                                  :subject subject
+                                  :from from
+                                  :from-name from-name
+                                  :date date))
                   result)))))))
 
 (defun notmuch-bone--load-all-open-reports ()
   "Collect open (message-id . plist) pairs from all sources."
   (mapcan #'notmuch-bone--extract-open-reports
           (notmuch-bone--load-sources)))
+
+;;; --- Minimal EDN reader/writer for ~/.config/bone/state.edn ---
+;;
+;; The state file is a top-level map: string keys (message-ids) → maps
+;; with keyword keys (:subject :type :author :created :read-at :flag).
+;; We parse into alists.
+
+(defun notmuch-bone--edn-skip-ws ()
+  (skip-chars-forward " \t\n\r,"))
+
+(defun notmuch-bone--edn-read ()
+  "Read one EDN value at point."
+  (notmuch-bone--edn-skip-ws)
+  (let ((c (char-after)))
+    (cond
+     ((null c)   (error "notmuch-bone EDN: unexpected EOF"))
+     ((eq c ?\") (notmuch-bone--edn-read-string))
+     ((eq c ?:)  (notmuch-bone--edn-read-keyword))
+     ((eq c ?\{) (notmuch-bone--edn-read-map))
+     ((eq c ?\[) (notmuch-bone--edn-read-vector))
+     ((or (and (>= c ?0) (<= c ?9))
+          (and (eq c ?-) (let ((d (char-after (1+ (point)))))
+                           (and d (>= d ?0) (<= d ?9)))))
+      (notmuch-bone--edn-read-number))
+     (t (notmuch-bone--edn-read-symbol)))))
+
+(defun notmuch-bone--edn-read-string ()
+  (forward-char 1)
+  (let ((chars nil))
+    (while (not (eq (char-after) ?\"))
+      (let ((c (char-after)))
+        (cond
+         ((null c) (error "notmuch-bone EDN: unterminated string"))
+         ((eq c ?\\)
+          (forward-char 1)
+          (let ((esc (char-after)))
+            (unless esc (error "notmuch-bone EDN: dangling backslash"))
+            (push (pcase esc
+                    (?n ?\n) (?t ?\t) (?r ?\r)
+                    (?b ?\b) (?f ?\f)
+                    (?\\ ?\\) (?\" ?\")
+                    (?u (forward-char 1)
+                        (let ((hex (buffer-substring-no-properties
+                                    (point) (+ (point) 4))))
+                          (forward-char 3)
+                          (string-to-number hex 16)))
+                    (_ esc))
+                  chars))
+          (forward-char 1))
+         (t (push c chars) (forward-char 1)))))
+    (forward-char 1)
+    (apply #'string (nreverse chars))))
+
+(defun notmuch-bone--edn-read-keyword ()
+  (forward-char 1)
+  (let ((start (1- (point))))
+    (skip-chars-forward "a-zA-Z0-9._/?!+*<>=&%$-")
+    (intern (buffer-substring-no-properties start (point)))))
+
+(defun notmuch-bone--edn-read-symbol ()
+  (let ((start (point)))
+    (skip-chars-forward "a-zA-Z0-9._/?!+*<>=&%$-")
+    (pcase (buffer-substring-no-properties start (point))
+      ("nil"   nil)
+      ("true"  t)
+      ("false" nil)
+      (s       (intern s)))))
+
+(defun notmuch-bone--edn-read-number ()
+  (let ((start (point)))
+    (skip-chars-forward "0-9.eE+-")
+    (string-to-number (buffer-substring-no-properties start (point)))))
+
+(defun notmuch-bone--edn-read-map ()
+  (forward-char 1)
+  (let ((acc nil))
+    (notmuch-bone--edn-skip-ws)
+    (while (not (eq (char-after) ?\}))
+      (let ((k (notmuch-bone--edn-read)))
+        (notmuch-bone--edn-skip-ws)
+        (push (cons k (notmuch-bone--edn-read)) acc))
+      (notmuch-bone--edn-skip-ws))
+    (forward-char 1)
+    (nreverse acc)))
+
+(defun notmuch-bone--edn-read-vector ()
+  (forward-char 1)
+  (let ((acc nil))
+    (notmuch-bone--edn-skip-ws)
+    (while (not (eq (char-after) ?\]))
+      (push (notmuch-bone--edn-read) acc)
+      (notmuch-bone--edn-skip-ws))
+    (forward-char 1)
+    (nreverse acc)))
+
+(defun notmuch-bone--edn-write-string (s)
+  "Serialize S as an EDN/Clojure string literal."
+  (concat "\""
+          (replace-regexp-in-string
+           "[\\\\\"\n\t\r\b\f]"
+           (lambda (m)
+             (pcase (aref m 0)
+               (?\n "\\n") (?\t "\\t") (?\r "\\r")
+               (?\b "\\b") (?\f "\\f")
+               (?\\ "\\\\") (?\" "\\\"")))
+           s t t)
+          "\""))
+
+(defun notmuch-bone--edn-write-value (v)
+  (cond
+   ((stringp v)  (notmuch-bone--edn-write-string v))
+   ((keywordp v) (symbol-name v))
+   ((eq v t)     "true")
+   ((null v)     "nil")
+   ((numberp v)  (number-to-string v))
+   ((consp v)    (notmuch-bone--edn-write-entry v))
+   (t (error "notmuch-bone EDN: cannot serialize %S" v))))
+
+(defun notmuch-bone--edn-write-entry (entry)
+  "Format an inner state ENTRY (alist with keyword keys) as an EDN map."
+  (if (null entry) "{}"
+    (concat "{"
+            (mapconcat (lambda (kv)
+                         (concat (notmuch-bone--edn-write-value (car kv))
+                                 " "
+                                 (notmuch-bone--edn-write-value (cdr kv))))
+                       entry ", ")
+            "}")))
+
+;;; --- State file I/O ---
+
+(defun notmuch-bone--read-state ()
+  "Return bone's state.edn as an alist of (mid . inner-alist), or nil."
+  (let ((file (expand-file-name notmuch-bone-state-file)))
+    (when (file-readable-p file)
+      (condition-case err
+          (with-temp-buffer
+            (insert-file-contents file)
+            (goto-char (point-min))
+            (notmuch-bone--edn-skip-ws)
+            (when (eq (char-after) ?{)
+              (notmuch-bone--edn-read-map)))
+        (error
+         (message "notmuch-bone: cannot parse %s: %s — using empty state."
+                  file (error-message-string err))
+         nil)))))
+
+(defun notmuch-bone--write-state (state)
+  "Write STATE (alist of (mid . inner-alist)) to `notmuch-bone-state-file'.
+Matches bone's on-disk format: outer map with one entry per line."
+  (let ((file (expand-file-name notmuch-bone-state-file)))
+    (make-directory (file-name-directory file) t)
+    (with-temp-file file
+      (if (null state)
+          (insert "{}\n")
+        (insert "{")
+        (let ((first t))
+          (dolist (kv state)
+            (if first (setq first nil) (insert "\n "))
+            (insert (notmuch-bone--edn-write-string (car kv)))
+            (insert " ")
+            (insert (notmuch-bone--edn-write-entry (cdr kv)))))
+        (insert "}\n")))))
+
+;;; --- State transitions (mirror bone's apply-transition) ---
+
+(defun notmuch-bone--iso-now ()
+  (format-time-string "%Y-%m-%dT%H:%M:%S.%6NZ" nil t))
+
+(defun notmuch-bone--author-string (info)
+  "Build \"Name <email>\" from INFO's :from-name and :from, or nil."
+  (let ((n (plist-get info :from-name))
+        (e (plist-get info :from)))
+    (cond
+     ((and n e (not (string-empty-p n))) (concat n " <" e ">"))
+     (e e)
+     (n n))))
+
+(defun notmuch-bone--alist-dissoc (alist key)
+  "Return a copy of ALIST without KEY."
+  (assq-delete-all key (copy-alist alist)))
+
+(defun notmuch-bone--alist-assoc (alist key value)
+  "Return a copy of ALIST with KEY set to VALUE."
+  (let ((e (copy-alist alist)))
+    (setf (alist-get key e) value)
+    e))
+
+(defun notmuch-bone--enrich-entry (existing info)
+  "Refresh entry metadata from INFO plist.  Only sets fields present in INFO.
+EXISTING is an alist (keyword keys).  Returns a new alist."
+  (let ((entry (copy-alist existing)))
+    (dolist (pair '((:subject . :subject)
+                    (:type    . :type)
+                    (:date    . :created)))
+      (when-let* ((v (plist-get info (car pair))))
+        (setf (alist-get (cdr pair) entry) v)))
+    (when-let* ((author (notmuch-bone--author-string info)))
+      (setf (alist-get :author entry) author))
+    entry))
+
+(defun notmuch-bone--state-put (state mid entry)
+  "Set MID → ENTRY in STATE, preserving order when MID is already present."
+  (if (assoc mid state)
+      (mapcar (lambda (kv) (if (equal (car kv) mid) (cons mid entry) kv))
+              state)
+    (append state (list (cons mid entry)))))
+
+(defun notmuch-bone--state-delete (state mid)
+  "Remove MID from STATE."
+  (cl-remove mid state :key #'car :test #'equal))
+
+(defun notmuch-bone--apply-transition (state action mid info)
+  "Toggle ACTION (:read, :todo, :sticky) for MID in STATE.
+INFO is the report's plist (used to enrich the entry on first touch).
+Mirrors the semantics of bone's `apply-transition'."
+  (let* ((base (notmuch-bone--enrich-entry (cdr (assoc mid state)) info))
+         (flag (alist-get :flag base))
+         (new
+          (pcase action
+            (:read   (if (alist-get :read-at base)
+                         (notmuch-bone--alist-dissoc base :read-at)
+                       (notmuch-bone--alist-assoc  base :read-at
+                                                   (notmuch-bone--iso-now))))
+            (:todo   (if (eq flag :todo)
+                         (notmuch-bone--alist-dissoc base :flag)
+                       (notmuch-bone--alist-assoc  base :flag :todo)))
+            (:sticky (if (eq flag :sticky)
+                         (notmuch-bone--alist-dissoc base :flag)
+                       (notmuch-bone--alist-assoc  base :flag :sticky))))))
+    (if (and (null (alist-get :flag    new))
+             (null (alist-get :read-at new)))
+        (notmuch-bone--state-delete state mid)
+      (notmuch-bone--state-put state mid new))))
+
+(defun notmuch-bone--mark-prefix (entry)
+  "Return a single-character mark for state ENTRY.
+\"!\" for :todo, \"*\" for :sticky, \"r\" for :read-at (no flag),
+space otherwise."
+  (let ((flag (cdr (assq :flag entry)))
+        (read (cdr (assq :read-at entry))))
+    (cond
+     ((eq flag :todo)   "!")
+     ((eq flag :sticky) "*")
+     (read              "r")
+     (t                 " "))))
+
+(defun notmuch-bone--action-on-p (state mid action)
+  "Return non-nil when ACTION is set for MID in STATE."
+  (let ((entry (cdr (assoc mid state))))
+    (pcase action
+      (:read   (cdr (assq :read-at entry)))
+      (:todo   (eq (cdr (assq :flag entry)) :todo))
+      (:sticky (eq (cdr (assq :flag entry)) :sticky)))))
 
 ;;; --- Annotation formatting ---
 
@@ -228,9 +508,13 @@ A report is open when its status is >= 4."
            (diff (float-time (time-subtract dl (current-time)))))
       (ceiling (/ diff 86400.0)))))
 
-(defun notmuch-bone--annotation (info)
-  "Build a fixed-width annotation string from report INFO plist."
-  (let* ((type     (notmuch-bone--type-letter (plist-get info :type)))
+(defun notmuch-bone--annotation (info &optional entry)
+  "Build a fixed-width annotation string from report INFO plist.
+When non-nil, ENTRY is the state.edn alist for this report; its
+mark prefix (':todo', ':sticky', ':read-at') is shown as the
+leftmost column."
+  (let* ((mark     (notmuch-bone--mark-prefix entry))
+         (type     (notmuch-bone--type-letter (plist-get info :type)))
          (flags    (plist-get info :flags))
          (priority (plist-get info :priority))
          (votes    (plist-get info :votes))
@@ -245,7 +529,8 @@ A report is open when its status is >= 4."
          (ex-pad   (string-pad ex-str notmuch-bone-expiry-width))
          (votes-str (if votes (format "[%s]" votes) ""))
          (votes-pad (string-pad votes-str notmuch-bone-votes-width))
-         (tag      (concat type " " flags " " pri-str " " dl-pad ex-pad votes-pad)))
+         (tag      (concat mark " " type " " flags " " pri-str " "
+                           dl-pad ex-pad votes-pad)))
     tag))
 
 ;;; --- Query building ---
@@ -267,21 +552,20 @@ REPORTS is a list of (message-id . plist)."
 
 ;;; --- Overlay highlighting ---
 
-(defun notmuch-bone--normalize-mid (mid)
-  "Strip brackets from MID for consistent lookup."
-  (notmuch-bone--strip-mid mid))
+(defun notmuch-bone--bracket-mid (bare)
+  "Return BARE message-id wrapped in angle brackets."
+  (if (and (string-prefix-p "<" bare) (string-suffix-p ">" bare))
+      bare
+    (concat "<" bare ">")))
 
-(defvar-local notmuch-bone--report-map nil
-  "Buffer-local hash-table: bare message-id -> info plist.")
-
-(defvar-local notmuch-bone--active nil
-  "Non-nil when bone highlighting is active in this buffer.")
+(defvar-local notmuch-bone--reports nil
+  "Buffer-local list of (bare-message-id . info-plist) for current view.")
 
 (defun notmuch-bone--build-report-map (reports)
-  "Build a hash-table from REPORTS for fast lookup by message-id."
+  "Build a hash-table from REPORTS for fast lookup by bare message-id."
   (let ((ht (make-hash-table :test 'equal)))
     (dolist (r reports)
-      (puthash (notmuch-bone--normalize-mid (car r)) (cdr r) ht))
+      (puthash (notmuch-bone--strip-mid (car r)) (cdr r) ht))
     ht))
 
 (defun notmuch-bone--thread-message-ids (thread-id)
@@ -294,11 +578,12 @@ REPORTS is a list of (message-id . plist)."
             (split-string (string-trim output) "\n" t))))
 
 (defun notmuch-bone--find-match-in-thread (thread-id report-map)
-  "Return first matching report info plist for THREAD-ID, or nil."
+  "Return (BARE-MID . INFO) for the first matching message in THREAD-ID, or nil."
   (let ((mids (notmuch-bone--thread-message-ids thread-id))
         (found nil))
     (while (and mids (not found))
-      (setq found (gethash (car mids) report-map))
+      (let ((info (gethash (car mids) report-map)))
+        (when info (setq found (cons (car mids) info))))
       (setq mids (cdr mids)))
     found))
 
@@ -306,26 +591,39 @@ REPORTS is a list of (message-id . plist)."
   "Apply overlays in the current notmuch-search buffer.
 Walk each result line; if any message-id in that thread matches a
 report, highlight it and prepend an annotation via `before-string'."
-  (when notmuch-bone--report-map
-    (save-excursion
-      (goto-char (point-min))
-      (while (not (eobp))
-        (let* ((thread-id (notmuch-search-find-thread-id))
-               (info (and thread-id
-                          (notmuch-bone--find-match-in-thread
-                           thread-id notmuch-bone--report-map))))
-            (when info
-              (let* ((bol (line-beginning-position))
-                     (eol (line-end-position))
-                     (ann-str (notmuch-bone--annotation info))
-                     (p3 (= 3 (plist-get info :priority)))
-                     (ov (make-overlay bol eol)))
+  (when notmuch-bone--reports
+    (let ((report-map (notmuch-bone--build-report-map notmuch-bone--reports))
+          (state      (notmuch-bone--read-state)))
+      (save-excursion
+        (goto-char (point-min))
+        (while (not (eobp))
+          (let* ((thread-id (notmuch-search-find-thread-id))
+                 (match (and thread-id
+                             (notmuch-bone--find-match-in-thread
+                              thread-id report-map))))
+            (when match
+              (let* ((mid     (car match))
+                     (info    (cdr match))
+                     (entry   (cdr (assoc (notmuch-bone--bracket-mid mid)
+                                          state)))
+                     (bol     (line-beginning-position))
+                     (eol     (line-end-position))
+                     (ann-str (notmuch-bone--annotation info entry))
+                     (p3      (= 3 (plist-get info :priority)))
+                     (ov      (make-overlay bol eol)))
                 (when p3 (overlay-put ov 'face 'bold))
                 (overlay-put ov 'notmuch-bone t)
                 (overlay-put ov 'before-string
                              (propertize (concat ann-str " ")
                                          'face 'notmuch-bone-annotation-face)))))
-          (forward-line 1)))))
+          (forward-line 1))))))
+
+(defun notmuch-bone--refresh-overlays ()
+  "Clear and re-apply notmuch-bone overlays in the current search buffer."
+  (when (and notmuch-bone--reports
+             (derived-mode-p 'notmuch-search-mode))
+    (remove-overlays (point-min) (point-max) 'notmuch-bone t)
+    (notmuch-bone--apply-overlays)))
 
 ;;; --- Async: poll until search finishes, then highlight ---
 
@@ -350,9 +648,7 @@ report, highlight it and prepend an annotation via `before-string'."
     (if (null reports)
         (message "No open BARK reports found.")
       (notmuch-search (notmuch-bone--build-query reports))
-      (setq notmuch-bone--report-map
-            (notmuch-bone--build-report-map reports))
-      (setq notmuch-bone--active t)
+      (setq notmuch-bone--reports reports)
       (notmuch-bone--poll-and-highlight (current-buffer))
       (message "Searching %d BARK reports." (length reports)))))
 
@@ -364,6 +660,11 @@ report, highlight it and prepend an annotation via `before-string'."
     (if (null reports)
         (message "No open BARK reports found.")
       (notmuch-tree (notmuch-bone--build-query reports))
+      ;; `notmuch-tree' leaves the new tree buffer as the current buffer
+      ;; (via `pop-to-buffer-same-window'); rely on that so the buffer-
+      ;; local cache used by marking commands lands on the right buffer.
+      (with-current-buffer (current-buffer)
+        (setq notmuch-bone--reports reports))
       (message "Tree view for %d BARK reports." (length reports)))))
 
 ;;;###autoload
@@ -376,9 +677,7 @@ Use `notmuch-bone-clear' to remove highlights."
   (let ((reports (notmuch-bone--load-all-open-reports)))
     (if (null reports)
         (message "No open BARK reports found.")
-      (setq notmuch-bone--report-map
-            (notmuch-bone--build-report-map reports))
-      (setq notmuch-bone--active t)
+      (setq notmuch-bone--reports reports)
       (notmuch-bone--apply-overlays)
       (message "Highlighted %d BARK reports." (length reports)))))
 
@@ -408,20 +707,96 @@ Use `notmuch-bone-clear' to remove highlights."
         (if (null filtered)
             (message "No reports for topic \"%s\"." topic)
           (notmuch-search (notmuch-bone--build-query filtered))
-          (setq notmuch-bone--report-map
-                (notmuch-bone--build-report-map filtered))
-          (setq notmuch-bone--active t)
+          (setq notmuch-bone--reports filtered)
           (notmuch-bone--poll-and-highlight (current-buffer))
           (message "Searching %d BARK reports for topic \"%s\"."
                    (length filtered) topic))))))
 
+;;; --- Marking commands ---
+
+(defun notmuch-bone--info-for-mid (mid reports)
+  "Return the info plist for bare MID in REPORTS, or nil."
+  (catch 'found
+    (dolist (r reports)
+      (when (equal (notmuch-bone--strip-mid (car r)) mid)
+        (throw 'found (cdr r))))))
+
+(defun notmuch-bone--current-mid (reports)
+  "Return current line's bare message-id matching one in REPORTS, or nil.
+In `notmuch-tree-mode' uses the current message-id; in
+`notmuch-search-mode' returns the first message-id in the thread
+that is also a BARK report."
+  (cond
+   ((derived-mode-p 'notmuch-tree-mode)
+    (when-let* ((raw (notmuch-tree-get-message-id t))
+                (mid (notmuch-bone--strip-mid raw)))
+      (when (notmuch-bone--info-for-mid mid reports) mid)))
+   ((derived-mode-p 'notmuch-search-mode)
+    (when-let* ((report-map (notmuch-bone--build-report-map reports))
+                (thread-id  (notmuch-search-find-thread-id))
+                (match      (notmuch-bone--find-match-in-thread
+                             thread-id report-map)))
+      (car match)))))
+
+(defun notmuch-bone--mark (action on-msg off-msg)
+  "Toggle ACTION on the current BARK report.
+Show ON-MSG or OFF-MSG depending on the resulting state."
+  (let* ((reports (or notmuch-bone--reports
+                      (notmuch-bone--load-all-open-reports)))
+         (mid     (and reports (notmuch-bone--current-mid reports)))
+         (info    (and mid (notmuch-bone--info-for-mid mid reports))))
+    (cond
+     ((null reports) (user-error "No BARK reports loaded"))
+     ((null mid)     (user-error "No BARK report on current line"))
+     ((null info)    (user-error "Current line is not a BARK report"))
+     (t
+      (let* ((bracketed (notmuch-bone--bracket-mid mid))
+             (state     (notmuch-bone--read-state))
+             (new       (notmuch-bone--apply-transition
+                         state action bracketed info)))
+        (notmuch-bone--write-state new)
+        (notmuch-bone--refresh-overlays)
+        (message "%s" (if (notmuch-bone--action-on-p new bracketed action)
+                          on-msg off-msg)))))))
+
+;;;###autoload
+(defun notmuch-bone-mark-read ()
+  "Toggle the :read-at timestamp for the current BARK report.
+Edits bone's `~/.config/bone/state.edn'.
+
+In `notmuch-search-mode' the current line is a thread; the *first*
+message-id in that thread that is also a BARK report is the one
+toggled.  Use `notmuch-bone-tree' (or open the thread) to mark a
+specific report when a thread contains several."
+  (interactive)
+  (notmuch-bone--mark :read "Marked read" "Unmarked read"))
+
+;;;###autoload
+(defun notmuch-bone-mark-todo ()
+  "Toggle the :todo flag for the current BARK report.
+Edits bone's `~/.config/bone/state.edn'.
+
+See `notmuch-bone-mark-read' for the search-mode caveat about
+threads containing several BARK reports."
+  (interactive)
+  (notmuch-bone--mark :todo "Marked TODO" "Unmarked TODO"))
+
+;;;###autoload
+(defun notmuch-bone-mark-sticky ()
+  "Toggle the :sticky flag for the current BARK report.
+Edits bone's `~/.config/bone/state.edn'.
+
+See `notmuch-bone-mark-read' for the search-mode caveat about
+threads containing several BARK reports."
+  (interactive)
+  (notmuch-bone--mark :sticky "Marked STICKY" "Unmarked STICKY"))
+
 ;;;###autoload
 (defun notmuch-bone-clear ()
-  "Remove all notmuch-bone overlays and disable auto-rehighlighting."
+  "Remove all notmuch-bone overlays in the current buffer."
   (interactive)
   (remove-overlays (point-min) (point-max) 'notmuch-bone t)
-  (setq notmuch-bone--active nil)
-  (setq notmuch-bone--report-map nil))
+  (setq notmuch-bone--reports nil))
 
 (provide 'notmuch-bone)
 ;;; notmuch-bone.el ends here
