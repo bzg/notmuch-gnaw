@@ -7,6 +7,9 @@ open [[https://codeberg.org/bzg/bark][BARK]] report. It reads the same =reports.
 
 * Requirements
 
+- The [[https://codeberg.org/bzg/bone.el][bone.el]] library, which provides the shared data layer
+  (configuration, report cache and =state.edn= handling).  Installing
+  =notmuch-bone= from MELPA pulls in this dependency automatically.
 - =~/.config/bone/config.edn= (shared with bone), containing at least
   a =:sources= vector with =:url= entries pointing to =reports.json=
   files (local paths or URLs).
@@ -53,11 +56,11 @@ You can also [[mailto:bzg@bzg.fr][send me an email]] and support my work on [[ht
 
 * Intentional Versioning
 
-This project uses [[https://intver.org][Intentional Versioning]], here are the three audiences:
+This project uses [[https://intver.org][Intentional Versioning]], with three audiences:
 
-- =x= : end users who use notmuch-bone
-- =y= : external packagers
-- =z= : contributors to the codebase
+- =x=: end users
+- =y=: packagers
+- =z=: contributors to the codebase
 
 * License
 
