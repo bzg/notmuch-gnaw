@@ -26,6 +26,9 @@
 ;;
 ;;; Commentary:
 ;;
+;; This library is not actively maintained, it is shared as a proof of
+;; concept.  If you want to maintain and develop it, please contact me.
+;;
 ;; Show and highlight BONE reports in notmuch.
 ;;
 ;; M-x notmuch-gnaw RET         — search for open BONE reports

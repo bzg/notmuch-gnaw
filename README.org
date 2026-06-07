@@ -2,6 +2,9 @@
 
 [[https://intver.org/][https://img.shields.io/badge/versioning-intver.org-blue.svg?style=for-the-badge]]
 
+*This library is not actively maintained, it is shared as a proof of
+concept.  If you want to maintain and develop it, please [[mailto:bzg@bzg.fr][contact me]].*
+
 =notmuch-gnaw= highlights notmuch emails whose =Message-Id= matches an
 open [[https://codeberg.org/bzg/bone][BONE]] report. It reads the same =reports.json= sources as [[https://codeberg.org/bzg/gnaw][gnaw]].
 
