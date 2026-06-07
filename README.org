@@ -10,8 +10,9 @@ open [[https://codeberg.org/bzg/bark][BARK]] report. It reads the same =reports.
 * Requirements
 
 - The [[https://codeberg.org/bzg/bone.el][bone.el]] library, which provides the shared data layer
-  (configuration, report cache and =state.edn= handling).  Installing
-  =notmuch-bone= from MELPA pulls in this dependency automatically.
+  (configuration, report cache and =state.edn= handling).  Once
+  =notmuch-bone= is on MELPA this dependency will be pulled in
+  automatically; until then, see /Installation/ below.
 - =~/.config/bone/config.edn= (shared with bone), containing at least
   a =:sources= vector with =:url= entries pointing to =reports.json=
   files (local paths or URLs).
@@ -19,6 +20,28 @@ open [[https://codeberg.org/bzg/bark][BARK]] report. It reads the same =reports.
 - =notmuch-bone= does not call the =bone= binary, it only reads the
   files that =bone= produces.  You need to have run =bone= at least
   once to generate =config.edn= and the =reports.json= files.
+
+* Installation
+
+=notmuch-bone= is not on MELPA yet.  On Emacs 30 or later, install it
+from git with the built-in =package-vc=.  Install [[https://codeberg.org/bzg/bone.el][bone.el]] *first*,
+since it is its dependency and is not in any package archive (the
+=notmuch= dependency is pulled from NonGNU ELPA automatically):
+
+#+begin_src emacs-lisp
+(use-package bone
+  :vc (:url "https://codeberg.org/bzg/bone.el" :rev :newest))
+
+(use-package notmuch-bone
+  :vc (:url "https://codeberg.org/bzg/notmuch-bone" :rev :newest))
+#+end_src
+
+Or interactively, in order:
+
+: M-x package-vc-install RET https://codeberg.org/bzg/bone.el RET
+: M-x package-vc-install RET https://codeberg.org/bzg/notmuch-bone RET
+
+Update later with =M-x package-vc-upgrade=.
 
 * Commands
 
