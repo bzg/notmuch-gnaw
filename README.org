@@ -17,12 +17,14 @@ open [[https://codeberg.org/bzg/bone][BONE]] report. It reads the same =reports.
   =notmuch-gnaw= is on MELPA this dependency will be pulled in
   automatically; until then, see /Installation/ below.
 - =~/.config/gnaw/config.edn= (shared with gnaw), containing at least
-  a =:sources= vector with =:url= entries pointing to =reports.json=
+  a =:sources= vector with =:urls= entries pointing to =reports.json=
   files (local paths or URLs).
-- =notmuch-gnaw= supports =reports.json= bone-format =0.9.1=.
 - =notmuch-gnaw= does not call the =gnaw= binary, it only reads the
-  files that =gnaw= produces.  You need to have run =gnaw= at least
-  once to generate =config.edn= and the =reports.json= files.
+  files that =gnaw= produces (=M-x gnaw-add-source= can create
+  =config.edn= for you).
+
+Report parsing is done by [[https://codeberg.org/bzg/gnaw.el][gnaw.el]]; see its requirements for the
+supported =reports.json= bone-format.
 
 * Installation
 
@@ -48,25 +50,25 @@ Update later with =M-x package-vc-upgrade=.
 
 * Commands
 
-- =M-x notmuch-gnaw= — Search for open BONE reports and highlight them.
-- =M-x notmuch-gnaw-tree= — Show open BONE reports in =notmuch-tree=.
-- =M-x notmuch-gnaw-highlight= — Highlight matches in current
+- =M-x notmuch-gnaw= -- Search for open BONE reports and highlight them.
+- =M-x notmuch-gnaw-tree= -- Show open BONE reports in =notmuch-tree=.
+- =M-x notmuch-gnaw-highlight= -- Highlight matches in current
   =notmuch-search= buffer.
-- =M-x notmuch-gnaw-topic= — Filter reports by selected topic.
-- =M-x notmuch-gnaw-clear= — Remove all =notmuch-gnaw= overlays.
+- =M-x notmuch-gnaw-topic= -- Filter reports by selected topic.
+- =M-x notmuch-gnaw-clear= -- Remove all =notmuch-gnaw= overlays.
 
 ** Local marks
 
-The following commands toggle gnaw's local marks. They edit
-=~/.config/gnaw/state.edn=, which is shared with the =gnaw= CLI and
-=gnus-gnaw=, so marks are visible across all three.
+The following commands toggle gnaw's local marks.  They edit
+=~/.config/gnaw/state.edn=, which is shared with the =gnaw= CLI,
+=M-x gnaw= and the other mail front-ends, so marks are visible across
+all clients.
 
-- =M-x notmuch-gnaw-mark-read= — Toggle the =:read-at= timestamp.
-- =M-x notmuch-gnaw-mark-todo= — Toggle the =:todo= flag.
-- =M-x notmuch-gnaw-mark-sticky= — Toggle the =:sticky= flag.
+- =M-x notmuch-gnaw-mark-sticky= -- toggle the sticky mark (keep visible).
+- =M-x notmuch-gnaw-mark-dismiss= -- toggle the dismiss mark (hide).
 
-The annotation gains a leading column showing the current mark:
-=!= for =:todo=, =*= for =:sticky=, =r= for =:read-at= (without flag).
+The annotation gains a leading mark column: =*= for sticky, =d= for
+dismiss, space otherwise.
 
 In =notmuch-search-mode= a line is a thread; the *first* message-id in
 that thread that is also a BONE report is the one toggled.  Use

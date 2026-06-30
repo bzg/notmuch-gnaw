@@ -7,7 +7,7 @@
 ;; Keywords: mail
 ;; URL: https://codeberg.org/bzg/notmuch-gnaw
 ;; Version: 0.8.0
-;; Package-Requires: ((emacs "28.1") (notmuch "0.38") (gnaw "0.1"))
+;; Package-Requires: ((emacs "28.1") (notmuch "0.38") (gnaw "0.2"))
 
 ;; This file is not part of GNU Emacs.
 
@@ -31,20 +31,20 @@
 ;;
 ;; Show and highlight BONE reports in notmuch.
 ;;
-;; M-x notmuch-gnaw RET         — search for open BONE reports
-;; M-x notmuch-gnaw-tree RET    — show them in tree view
-;; M-x notmuch-gnaw-topic RET   — search filtered by topic
-;; M-x notmuch-gnaw-highlight RET — highlight matches in current search buffer
-;; M-x notmuch-gnaw-clear RET   — remove highlights
-;; M-x gnaw-update RET          — force update of the remote reports cache
+;; M-x notmuch-gnaw RET         -- search for open BONE reports
+;; M-x notmuch-gnaw-tree RET    -- show them in tree view
+;; M-x notmuch-gnaw-topic RET   -- search filtered by topic
+;; M-x notmuch-gnaw-highlight RET -- highlight matches in current search buffer
+;; M-x notmuch-gnaw-clear RET   -- remove highlights
+;; M-x gnaw-update RET          -- force update of the remote reports cache
 ;;
 ;; The following commands toggle gnaw's local marks (kept in
 ;; ~/.config/gnaw/state.edn so they are shared with the gnaw CLI):
 ;;
-;; M-x notmuch-gnaw-mark-sticky RET — toggle the sticky mark (keep visible)
-;; M-x notmuch-gnaw-mark-skip RET — toggle the skip mark (hide)
+;; M-x notmuch-gnaw-mark-sticky RET -- toggle the sticky mark (keep visible)
+;; M-x notmuch-gnaw-mark-dismiss RET -- toggle the dismiss mark (hide)
 ;;
-;; The annotation gains a leading mark column: '*' = sticky, '_' = skip.
+;; The annotation gains a leading mark column: '*' = sticky, 'd' = dismiss.
 ;;
 ;; notmuch-gnaw builds on the `gnaw' library for the shared data layer
 ;; (configuration, report sources, cache and state.edn); this file only
@@ -53,9 +53,7 @@
 ;;; Code:
 
 (require 'gnaw)
-(require 'cl-lib)
-(require 'subr-x)
-(require 'time-date)
+(require 'json)
 (require 'notmuch)
 (require 'notmuch-tree)
 
@@ -71,70 +69,8 @@
 
 (defface notmuch-gnaw-annotation-face
   '((t :inherit shadow))
-  "Face for right-margin annotations."
+  "Face for the report annotation prefixing highlighted lines."
   :group 'notmuch-gnaw)
-
-(defvar notmuch-gnaw-votes-width 5
-  "Fixed width for the votes column.")
-
-(defvar notmuch-gnaw-deadline-width 4
-  "Fixed width for the deadline column.")
-
-(defvar notmuch-gnaw-expiry-width 4
-  "Fixed width for the expiry column.")
-
-;;; --- State mark prefix ----------------------------------------------------
-
-(defun notmuch-gnaw--mark-prefix (entry)
-  "Get mark char for state ENTRY."
-  (let ((flag (cdr (assq :flag entry)))
-        (skip (cdr (assq :skip-since entry))))
-    (cond
-     ((eq flag :sticky) "*")
-     (skip            "_")
-     (t               " "))))
-
-;; --- Annotation formatting ------------------------------------------------
-
-(defun notmuch-gnaw--type-letter (type)
-  "Get letter abbreviation for TYPE."
-  (pcase type
-    ("bug"          "B")
-    ("patch"        "P")
-    ("request"      "?")
-    ("announcement" "A")
-    ("release"      "R")
-    ("change"       "C")
-    (_              "·")))
-
-(defun notmuch-gnaw--deadline-days (deadline)
-  "Days until YYYY-MM-DD DEADLINE."
-  (when deadline
-    (let* ((dl (date-to-time (concat deadline " 00:00:00")))
-           (diff (float-time (time-subtract dl (current-time)))))
-      (ceiling (/ diff 86400.0)))))
-
-(defun notmuch-gnaw--annotation (info &optional entry)
-  "Build annotation string for report INFO and state ENTRY."
-  (let* ((mark     (notmuch-gnaw--mark-prefix entry))
-         (type     (notmuch-gnaw--type-letter (plist-get info :type)))
-         (flags    (plist-get info :flags))
-         (priority (plist-get info :priority))
-         (votes    (plist-get info :votes))
-         (deadline (plist-get info :deadline))
-         (expiry   (plist-get info :expiry))
-         (dl-days  (notmuch-gnaw--deadline-days deadline))
-         (ex-days  (notmuch-gnaw--deadline-days expiry))
-         (pri-str  (pcase priority (3 "A") (2 "B") (1 "C") (_ " ")))
-         (dl-str   (if dl-days (format "D%+d" dl-days) ""))
-         (dl-pad   (string-pad dl-str notmuch-gnaw-deadline-width))
-         (ex-str   (if ex-days (format "E%+d" ex-days) ""))
-         (ex-pad   (string-pad ex-str notmuch-gnaw-expiry-width))
-         (votes-str (if votes (format "[%s]" votes) ""))
-         (votes-pad (string-pad votes-str notmuch-gnaw-votes-width))
-         (tag      (concat mark " " type " " flags " " pri-str " "
-                           dl-pad ex-pad votes-pad)))
-    tag))
 
 ;; --- Query building -------------------------------------------------------
 
@@ -233,10 +169,11 @@ Run notmuch search once to find which thread each report belongs to."
                                           state)))
                      (bol     (line-beginning-position))
                      (eol     (line-end-position))
-                     (ann-str (notmuch-gnaw--annotation info entry))
+                     (ann-str (gnaw-annotation info entry))
                      (p3      (= 3 (plist-get info :priority)))
+                     (face    (if p3 '(notmuch-gnaw-face bold) 'notmuch-gnaw-face))
                      (ov      (make-overlay bol eol)))
-                (when p3 (overlay-put ov 'face 'bold))
+                (overlay-put ov 'face face)
                 (overlay-put ov 'notmuch-gnaw t)
                 (overlay-put ov 'before-string
                              (propertize (concat ann-str " ")
@@ -303,33 +240,19 @@ Run notmuch search once to find which thread each report belongs to."
       (notmuch-gnaw--apply-overlays)
       (message "Highlighted %d BONE reports." (length reports)))))
 
-(defun notmuch-gnaw--collect-topics (reports)
-  "Sorted list of topics in REPORTS."
-  (let ((topics nil))
-    (dolist (r reports)
-      (let ((topic (plist-get (cdr r) :topic)))
-        (when topic
-          (cl-pushnew topic topics :test #'equal))))
-    (sort topics #'string<)))
-
-(defun notmuch-gnaw--filter-by-topic (reports topic)
-  "Return REPORTS matching TOPIC."
-  (cl-remove-if-not (lambda (r) (equal (plist-get (cdr r) :topic) topic))
-                    reports))
-
 ;;;###autoload
 (defun notmuch-gnaw-topic ()
   "Search BONE reports filtered by topic."
   (interactive)
   (let* ((reports (gnaw-reports))
-         (topics  (notmuch-gnaw--collect-topics reports)))
+         (topics  (gnaw-topics reports)))
     (cond
      ((null reports) (message "No open BONE reports found."))
      ((null topics)  (message "No topics in any report."))
      (t
       (let* ((topic    (completing-read "BONE topic: " topics nil t))
              (filtered (and (not (string= topic ""))
-                            (notmuch-gnaw--filter-by-topic reports topic))))
+                            (gnaw-filter-by-topic reports topic))))
         (cond
          ((or (string= topic "") (null filtered))
           (message "No reports for topic \"%s\"." topic))
@@ -382,10 +305,10 @@ Run notmuch search once to find which thread each report belongs to."
   (notmuch-gnaw--mark :sticky "Marked sticky" "Unmarked sticky"))
 
 ;;;###autoload
-(defun notmuch-gnaw-mark-skip ()
-  "Toggle the skip mark (hide) for the current report."
+(defun notmuch-gnaw-mark-dismiss ()
+  "Toggle the dismiss mark (hide) for the current report."
   (interactive)
-  (notmuch-gnaw--mark :skip "Skipped" "Unskipped"))
+  (notmuch-gnaw--mark :dismiss "Dismissed" "Undismissed"))
 
 ;;;###autoload
 (defun notmuch-gnaw-clear ()
@@ -398,14 +321,16 @@ Run notmuch search once to find which thread each report belongs to."
 ;; --- Cache update hooks ----------------------------------------------------
 
 (defun notmuch-gnaw--refresh-all-buffers ()
-  "Refresh notmuch-gnaw overlays in all search/tree buffers."
-  (dolist (buf (buffer-list))
-    (with-current-buffer buf
-      (when (and notmuch-gnaw--reports
-                 (or (derived-mode-p 'notmuch-search-mode)
-                     (derived-mode-p 'notmuch-tree-mode)))
-        (setq notmuch-gnaw--thread-map nil)
-        (notmuch-gnaw--apply-overlays)))))
+  "Reload reports from the refreshed cache and re-apply overlays."
+  (let ((reports (gnaw-reports)))
+    (dolist (buf (buffer-list))
+      (with-current-buffer buf
+        (when (and notmuch-gnaw--reports
+                   (or (derived-mode-p 'notmuch-search-mode)
+                       (derived-mode-p 'notmuch-tree-mode)))
+          (setq notmuch-gnaw--reports reports
+                notmuch-gnaw--thread-map nil)
+          (notmuch-gnaw--apply-overlays))))))
 
 (add-hook 'gnaw-after-update-hook #'notmuch-gnaw--refresh-all-buffers)
 
