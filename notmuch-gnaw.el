@@ -7,7 +7,7 @@
 ;; Keywords: mail
 ;; URL: https://codeberg.org/bzg/notmuch-gnaw
 ;; Version: 0.8.0
-;; Package-Requires: ((emacs "28.1") (notmuch "0.38") (gnaw "0.2"))
+;; Package-Requires: ((emacs "28.1") (notmuch "0.38") (gnaw "0.3"))
 
 ;; This file is not part of GNU Emacs.
 
@@ -44,7 +44,7 @@
 ;; M-x notmuch-gnaw-mark-sticky RET -- toggle the sticky mark (keep visible)
 ;; M-x notmuch-gnaw-mark-dismiss RET -- toggle the dismiss mark (hide)
 ;;
-;; The annotation gains a leading mark column: '*' = sticky, 'd' = dismiss.
+;; The annotation gains a leading mark column: '!' = sticky, 'd' = dismiss.
 ;;
 ;; notmuch-gnaw builds on the `gnaw' library for the shared data layer
 ;; (configuration, report sources, cache and state.edn); this file only
@@ -95,6 +95,9 @@
 
 (defvar-local notmuch-gnaw--thread-map nil
   "Buffer-local map from thread-id to (bare-mid . info) for search view.")
+
+(defvar-local notmuch-gnaw--topic nil
+  "Topic filtering the buffer's reports, or nil for all reports.")
 
 (defun notmuch-gnaw--build-report-map (reports)
   "Build mapping from bare message-id to info for REPORTS."
@@ -170,8 +173,9 @@ Run notmuch search once to find which thread each report belongs to."
                      (bol     (line-beginning-position))
                      (eol     (line-end-position))
                      (ann-str (gnaw-annotation info entry))
-                     (p3      (= 3 (plist-get info :priority)))
-                     (face    (if p3 '(notmuch-gnaw-face bold) 'notmuch-gnaw-face))
+                     (top     (equal "A" (gnaw-priority-letter
+                                          (plist-get info :priority))))
+                     (face    (if top '(notmuch-gnaw-face bold) 'notmuch-gnaw-face))
                      (ov      (make-overlay bol eol)))
                 (overlay-put ov 'face face)
                 (overlay-put ov 'notmuch-gnaw t)
@@ -189,13 +193,19 @@ Run notmuch search once to find which thread each report belongs to."
 
 ;; --- Async: poll until search finishes, then highlight --------------------
 
+(defvar-local notmuch-gnaw--poll-timer nil
+  "Timer polling the buffer's search process, or nil.")
+
 (defun notmuch-gnaw--poll-and-highlight (buffer)
   "Poll BUFFER until notmuch search process finishes, then apply overlays."
   (when (buffer-live-p buffer)
-    (let ((proc (get-buffer-process buffer)))
-      (if (and proc (process-live-p proc))
-          (run-with-timer 0.3 nil #'notmuch-gnaw--poll-and-highlight buffer)
-        (with-current-buffer buffer
+    (with-current-buffer buffer
+      (let ((proc (get-buffer-process buffer)))
+        (if (and proc (process-live-p proc))
+            (setq notmuch-gnaw--poll-timer
+                  (run-with-timer 0.3 nil
+                                  #'notmuch-gnaw--poll-and-highlight buffer))
+          (setq notmuch-gnaw--poll-timer nil)
           (notmuch-gnaw--apply-overlays))))))
 
 ;; --- Interactive commands -------------------------------------------------
@@ -210,6 +220,7 @@ Run notmuch search once to find which thread each report belongs to."
       (notmuch-search (notmuch-gnaw--build-query reports))
       (setq notmuch-gnaw--reports reports)
       (setq notmuch-gnaw--thread-map nil)
+      (setq notmuch-gnaw--topic nil)
       (notmuch-gnaw--poll-and-highlight (current-buffer))
       (message "Searching %d BONE reports." (length reports)))))
 
@@ -221,9 +232,9 @@ Run notmuch search once to find which thread each report belongs to."
     (if (null reports)
         (message "No open BONE reports found.")
       (notmuch-tree (notmuch-gnaw--build-query reports))
-      (with-current-buffer (current-buffer)
-        (setq notmuch-gnaw--reports reports)
-        (notmuch-gnaw--poll-and-highlight (current-buffer)))
+      (setq notmuch-gnaw--reports reports)
+      (setq notmuch-gnaw--topic nil)
+      (notmuch-gnaw--poll-and-highlight (current-buffer))
       (message "Tree view for %d BONE reports." (length reports)))))
 
 ;;;###autoload
@@ -237,6 +248,7 @@ Run notmuch search once to find which thread each report belongs to."
         (message "No open BONE reports found.")
       (setq notmuch-gnaw--reports reports)
       (setq notmuch-gnaw--thread-map nil)
+      (setq notmuch-gnaw--topic nil)
       (notmuch-gnaw--apply-overlays)
       (message "Highlighted %d BONE reports." (length reports)))))
 
@@ -260,6 +272,7 @@ Run notmuch search once to find which thread each report belongs to."
           (notmuch-search (notmuch-gnaw--build-query filtered))
           (setq notmuch-gnaw--reports filtered)
           (setq notmuch-gnaw--thread-map nil)
+          (setq notmuch-gnaw--topic topic)
           (notmuch-gnaw--poll-and-highlight (current-buffer))
           (message "Searching %d BONE reports for topic \"%s\"."
                    (length filtered) topic))))))))
@@ -315,20 +328,28 @@ Run notmuch search once to find which thread each report belongs to."
   "Remove all notmuch-gnaw overlays."
   (interactive)
   (remove-overlays (point-min) (point-max) 'notmuch-gnaw t)
+  (when notmuch-gnaw--poll-timer
+    (cancel-timer notmuch-gnaw--poll-timer)
+    (setq notmuch-gnaw--poll-timer nil))
   (setq notmuch-gnaw--reports nil)
-  (setq notmuch-gnaw--thread-map nil))
+  (setq notmuch-gnaw--thread-map nil)
+  (setq notmuch-gnaw--topic nil))
 
 ;; --- Cache update hooks ----------------------------------------------------
 
 (defun notmuch-gnaw--refresh-all-buffers ()
-  "Reload reports from the refreshed cache and re-apply overlays."
+  "Reload reports from the refreshed cache and re-apply overlays.
+A buffer set up by `notmuch-gnaw-topic' keeps its topic filter."
   (let ((reports (gnaw-reports)))
     (dolist (buf (buffer-list))
       (with-current-buffer buf
         (when (and notmuch-gnaw--reports
                    (or (derived-mode-p 'notmuch-search-mode)
                        (derived-mode-p 'notmuch-tree-mode)))
-          (setq notmuch-gnaw--reports reports
+          (setq notmuch-gnaw--reports
+                (if notmuch-gnaw--topic
+                    (gnaw-filter-by-topic reports notmuch-gnaw--topic)
+                  reports)
                 notmuch-gnaw--thread-map nil)
           (notmuch-gnaw--apply-overlays))))))
 

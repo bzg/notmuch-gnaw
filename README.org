@@ -67,7 +67,7 @@ all clients.
 - =M-x notmuch-gnaw-mark-sticky= -- toggle the sticky mark (keep visible).
 - =M-x notmuch-gnaw-mark-dismiss= -- toggle the dismiss mark (hide).
 
-The annotation gains a leading mark column: =*= for sticky, =d= for
+The annotation gains a leading mark column: =!= for sticky, =d= for
 dismiss, space otherwise.
 
 In =notmuch-search-mode= a line is a thread; the *first* message-id in
